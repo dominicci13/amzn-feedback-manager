@@ -28,6 +28,9 @@ to_email: list[str] = [os.getenv("TO_EMAIL")]
 cc_email: list[str] = [os.getenv("CC_EMAIL")]
 table_negative: str = os.getenv("DB_TABLE_NEGATIVE", "FedManNegative")
 table_positive: str = os.getenv("DB_TABLE_POSITIVE", "FedManPositive")
+for _t in (table_negative, table_positive):
+    if not _t.replace("_", "").isalnum():
+        raise ValueError(f"Invalid table name: {_t!r}")
 
 #Set Chrome User Data Directory
 user_data_dir: str = f"C:/ChromeAutomationProfile"
