@@ -23,9 +23,13 @@ directory: str = os.getcwd()
 load_dotenv()
 username: str = os.getenv("AMZN_email")
 password: str = os.getenv("AMZN_pass")
+sender_email: str = os.getenv("SENDER_EMAIL")
+to_email: list[str] = [os.getenv("TO_EMAIL")]
+cc_email: list[str] = [os.getenv("CC_EMAIL")]
+table_negative: str = os.getenv("DB_TABLE_NEGATIVE", "FedManNegative")
+table_positive: str = os.getenv("DB_TABLE_POSITIVE", "FedManPositive")
 
 #Set Chrome User Data Directory
-#user_data_dir: str = f"C:/Users/{win_user}/AppData/Local/Google/Chrome/User Data"
 user_data_dir: str = f"C:/ChromeAutomationProfile"
 
 #Create SQL Database connection
@@ -79,11 +83,8 @@ def LastUpdate() -> str:
     """
     #Get the most recent date from the "Date" column in the database
     cursor.execute(
-        f"""
-        SELECT MAX(UpdatedAt) AS RecentDate
-        FROM FedManNegative
-        WHERE Account = '{root}';
-        """
+        f"SELECT MAX(UpdatedAt) AS RecentDate FROM {table_negative} WHERE Account = ?",
+        (root,)
     )
 
     recent_date = cursor.fetchone()[0]
@@ -100,11 +101,8 @@ def FindOrder(order) -> str:
     """
     #Get the most recent date from the "Date" column in the database
     cursor.execute(
-        f"""
-        SELECT COUNT(OrderID) AS OrderID
-        FROM FedManPositive
-        WHERE OrderID = '{order}';
-        """
+        f"SELECT COUNT(OrderID) AS OrderID FROM {table_positive} WHERE OrderID = ?",
+        (order,)
     )
 
     order_count = cursor.fetchone()[0]
@@ -121,10 +119,10 @@ def RequestReport() -> None:
     driver.switch_to_window(0)
 
     if WeekDay == "Monday":
-        print(f"'[INFO]' Getting '{root}' 7-days Feedback Manager Report.")
+        print(f"[cyan][INFO][/cyan] Getting [cyan]{root}[/cyan] 7-days Feedback Manager Report.")
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".request_report_btn > kat-button:nth-child(1) > button:nth-child(1)"))).click()
     else:
-        print(f"'[INFO]' Getting '{root}' 1-day Feedback Manager Report.")
+        print(f"[cyan][INFO][/cyan] Getting [cyan]{root}[/cyan] 1-day Feedback Manager Report.")
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "kat-table-row.request_report_row:nth-child(2) > kat-table-cell:nth-child(2) > kat-dropdown:nth-child(1) > div:nth-child(1) > div:nth-child(1)"))).click()
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "1D0"))).click()
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".request_report_btn > kat-button:nth-child(1) > button:nth-child(1)"))).click()
@@ -139,17 +137,17 @@ def RequestReport() -> None:
     while report_status != "Ready":
 
         if report_status == "No Data":
-            print(f"'[INFO]' {report_status}. Moving to Positive Feedback.")
+            print(f"[cyan][INFO][/cyan] {report_status}. Moving to Positive Feedback.")
             break
 
-        print(f"'[INFO]' {report_status}. Waiting for report to be ready.")
+        print(f"[cyan][INFO][/cyan] {report_status}. Waiting for report to be ready.")
 
         #Click refresh button if it takes too long
         try:
             WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "/html/body/div/div[2]/div/my-app/div/div/report/div/kat-alert[3]")))
             time.sleep(10)
             WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".report_refresh_btn > button:nth-child(1)"))).click()
-        except:
+        except TimeoutException:
             pass
 
         report_status = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "/html/body/div/div[2]/div/my-app/div/div/report/div/kat-table[2]/kat-table-body/kat-table-row[1]/kat-table-cell[4]"))).text
@@ -162,7 +160,7 @@ def RequestReport() -> None:
         time.sleep(3)
 
         #Set the file directory
-        print("'[INFO]' File downloaded successfully. Loading to database.")
+        print("[cyan][INFO][/cyan] File downloaded successfully. Loading to database.")
         file_path = f"{directory}/downloaded_files/report.txt"
 
         reading_file = True
@@ -186,7 +184,7 @@ def RequestReport() -> None:
                 reading_file = False
 
             except FileNotFoundError:
-                print("'[FileNotFoundError]' Failed to read the downloaded file. Waiting 5 seconds and trying again.")
+                print("[bold red][ERROR][/bold red] Failed to read the downloaded file. Waiting 5 seconds and trying again.")
                 time.sleep(5)
 
         #Replace NaN values with None for all columns
@@ -202,27 +200,17 @@ def RequestReport() -> None:
         for index, row in df.iterrows():
             try:
                 cursor.execute(
-                    f"""
-                    INSERT INTO FedManNegative (Account, Date, Rating, Comments, Response, OrderID, RaterEmail, UpdatedAt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    row["Account"],
-                    row["Date"],
-                    row["Rating"],
-                    row["Comments"],
-                    row["Response"],
-                    row["Order ID"],
-                    row["Rater Email"],
-                    row["UpdatedAt"]
+                    f"INSERT INTO {table_negative} (Account, Date, Rating, Comments, Response, OrderID, RaterEmail, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row["Account"], row["Date"], row["Rating"], row["Comments"], row["Response"], row["Order ID"], row["Rater Email"], row["UpdatedAt"])
                 )
             except pyodbc.Error:
-                print(f"'[pyodbc.Error]' Error inserting row {index+1}:\n\n{row}", sep="\n\n")
+                print(f"[bold red][ERROR][/bold red] [pyodbc.Error] Error inserting row {index+1}:\n\n{row}", sep="\n\n")
                 traceback.print_exc()
-                quit()
+                raise RuntimeError(f"Insert failed at row {index + 1}. See traceback above.")
 
         # Commit the transaction
         conn.commit()
-        print(f"'[INFO]' Data inserted successfully in table 'FedManNegative'.")
+        print(f"[cyan][INFO][/cyan] Data inserted successfully in table [cyan]{table_negative}[/cyan].")
 
         #Delete the downloaded file
         os.remove(file_path)
@@ -233,7 +221,7 @@ def FeedbackManagerRatings() -> None:
     Retrieves Feedback Manager's feedback ratings table.
     """
     #Move to Feedback Manager main Dashboard
-    print(f"'[INFO]' Getting '{root}' feedback ratings.")
+    print(f"[cyan][INFO][/cyan] Getting [cyan]{root}[/cyan] feedback ratings.")
     driver.get("https://sellercentral.amazon.com/feedback-manager/index.html#/")
     driver.switch_to_window(0)
 
@@ -298,8 +286,8 @@ def FeedbackManagerRatings() -> None:
 
             table_range = True
 
-        except:
-            print("'[ERROR]' Error loading website. Retrying.")
+        except Exception:
+            print("[bold red][ERROR][/bold red] Error loading website. Retrying.")
             driver.refresh()
 
     RawData = [Pos30, Pos90, Pos365, PosLifetime, 
@@ -344,7 +332,7 @@ def FeedbackManagerComments() -> None:
         pass
 
     #Move to Feedback Manager main Dashboard
-    print(f"'[INFO]' Getting Positive Feedback comments for '{root}'.")
+    print(f"[cyan][INFO][/cyan] Getting Positive Feedback comments for [cyan]{root}[/cyan].")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".filter-tabs > kat-tabs:nth-child(1) > kat-tab-pane:nth-child(1) > kat-tab-header:nth-child(2)"))).click()
     WebDriverWait(driver, 10).until(EC.invisibility_of_element_located((By.CSS_SELECTOR, "kat-tab.tab-selected > feedback-list:nth-child(1) > kat-table:nth-child(2) > kat-spinner:nth-child(2)")))
 
@@ -370,7 +358,7 @@ def FeedbackManagerComments() -> None:
 
         #Check if the current order is already in the database
         if FindOrder(CurrentOrder) != 0:
-            print(f"'[INFO]' Order {CurrentOrder} is already in the database.")
+            print(f"[cyan][INFO][/cyan] Order {CurrentOrder} is already in the database.")
             MatchedOrder = True
             continue
 
@@ -388,29 +376,22 @@ def FeedbackManagerComments() -> None:
         for index, df_row in df.iterrows():
             try:
                 cursor.execute(
-                    f"""
-                    INSERT INTO FedManPositive (Account, Date, Rating, OrderID, Comments)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    df_row["Account"],
-                    df_row["Date"],
-                    df_row["Rating"],
-                    df_row["Order ID"],
-                    df_row["Comments"]
+                    f"INSERT INTO {table_positive} (Account, Date, Rating, OrderID, Comments) VALUES (?, ?, ?, ?, ?)",
+                    (df_row["Account"], df_row["Date"], df_row["Rating"], df_row["Order ID"], df_row["Comments"])
                 )
             except pyodbc.Error:
-                print(f"'[pyodbc.Error]' Error inserting current row:", df_row, sep="\n\n")
+                print(f"[bold red][ERROR][/bold red] [pyodbc.Error] Error inserting current row:", df_row, sep="\n\n")
                 traceback.print_exc()
-                quit()
+                raise RuntimeError(f"Insert failed at row {index + 1}. See traceback above.")
 
         # Commit the transaction
         conn.commit()
-        print(f"'[INFO]' Order {CurrentOrder} data inserted successfully in table 'FedManPositive'.")
+        print(f"[cyan][INFO][/cyan] Order {CurrentOrder} data inserted successfully in table [cyan]{table_positive}[/cyan].")
 
         row += 1
     
         if row == 21:
-            print("'[INFO]' Moving to next page.")
+            print("[cyan][INFO][/cyan] Moving to next page.")
             pagination: str = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "kat-tab.tab-selected > feedback-list:nth-child(1) > kat-pagination:nth-child(1)"))).text
             pagination = len(pagination.split("\n"))
 
@@ -447,26 +428,26 @@ while True:
             if tomorrow in ["Saturday", "Sunday"]:
                 if nowHour >= StartHour:
                     if StartHour > 12:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated on Monday at {StartHour - 12}:{StartMin} PM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated on Monday at {StartHour - 12}:{StartMin} PM.")
                     else:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated on Monday at {StartHour}:{StartMin} AM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated on Monday at {StartHour}:{StartMin} AM.")
                 else:
                     if StartHour > 12:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated today at {StartHour - 12}:{StartMin} PM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated today at {StartHour - 12}:{StartMin} PM.")
                     else:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated today at {StartHour}:{StartMin} AM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated today at {StartHour}:{StartMin} AM.")
             
             else:
                 if nowHour >= StartHour:
                     if StartHour > 12:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated tomorrow {tomorrow} at {StartHour - 12}:{StartMin} PM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated tomorrow {tomorrow} at {StartHour - 12}:{StartMin} PM.")
                     else:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated tomorrow {tomorrow} at {StartHour}:{StartMin} AM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated tomorrow {tomorrow} at {StartHour}:{StartMin} AM.")
                 else:
                     if StartHour > 12:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated today at {StartHour}:{StartMin - 12} PM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated today at {StartHour}:{StartMin - 12} PM.")
                     else:
-                        print(f"'[INFO]' Feedback Manager dashboard will be updated today at {StartHour}:{StartMin} AM.")
+                        print(f"[cyan][INFO][/cyan] Feedback Manager dashboard will be updated today at {StartHour}:{StartMin} AM.")
 
             #Sleep until just before the Start time
             time.sleep(max(SleepTime - 1, 0))
@@ -499,17 +480,17 @@ while True:
                 opening_browser = False
 
             except (SessionNotCreatedException, RuntimeError):
-                print("'[ERROR]' Failed to open Chrome. It seems Chrome was already open. Killing the application and retrying.")
+                print("[bold red][ERROR][/bold red] Failed to open Chrome. It seems Chrome was already open. Killing the application and retrying.")
                 custom_functions.kill_app("chrome")
                 time.sleep(5)
             
             except PermissionError:
-                print("'[ERROR]' Failed to open Chrome. It seems 'uc_driver' was already open. Killing the application and retrying.")
+                print("[bold red][ERROR][/bold red] Failed to open Chrome. It seems 'uc_driver' was already open. Killing the application and retrying.")
                 custom_functions.kill_app("uc_driver")
                 time.sleep(5)
 
         #Open Feedback Manager workbook and update current working directory
-        print("'[INFO]' Opening Feedback Manager workbook.")
+        print("[cyan][INFO][/cyan] Opening Feedback Manager workbook.")
         FeedbackManWb = xw.Book(FeedbackMan)
         RatingSh = FeedbackManWb.sheets(7)
         custom_functions.update_directory(FeedbackManWb)
@@ -534,7 +515,7 @@ while True:
             elif account == "AccountE":
                 root = "Account E"
 
-            print(f"'[INFO]' Navigating to '{root}' account.")
+            print(f"[cyan][INFO][/cyan] Navigating to [cyan]{root}[/cyan] account.")
             driver.get(url)
             time.sleep(2)
             driver.switch_to_window(0)
@@ -545,7 +526,7 @@ while True:
                     code = accounts.Amazon_login(driver, username, password)
 
                     if not code:
-                        print("'[ERROR]' Failed to log in to Amazon. Trying again.")
+                        print("[bold red][ERROR][/bold red] Failed to log in to Amazon. Trying again.")
                         driver.get(url)
                         driver.switch_to_window(0)
 
@@ -553,11 +534,11 @@ while True:
                 pass
 
             #Confirm if Feedback Manager's files have been already downloaded today
-            print("'[INFO]' Checking if Feedback Manager's files have been downloaded.")
+            print("[cyan][INFO][/cyan] Checking if Feedback Manager's files have been downloaded.")
             last_update = LastUpdate().split(" ")[0]
 
             if last_update == currDate:
-                print(f"'[INFO]' Feedback Manager's files for '{root}' has been downloaded today.")
+                print(f"[cyan][INFO][/cyan] Feedback Manager's files for [cyan]{root}[/cyan] has been downloaded today.")
             else:
                 RequestReport()
 
@@ -574,7 +555,7 @@ while True:
         custom_functions.update_directory(AllItemsWb)
 
         #Update all queries root folders and refresh queries
-        print("'[INFO]' Opening 'All Items' and refreshing queries.")
+        print("[cyan][INFO][/cyan] Opening [cyan]All Items[/cyan] and refreshing queries.")
         QueriesAddress = AllItemsWb.macro("Module2.QueriesAddress")
         QueriesAddress()
         time.sleep(5)
@@ -588,7 +569,7 @@ while True:
         LastOrder = int(FManSh.range(f"B{FManSh.cells.last_cell.row}").end("up").row)
 
         if FirstOrder > LastOrder:
-            print("'[INFO]' No new orders to process.")
+            print("[cyan][INFO][/cyan] No new orders to process.")
             Orders = None
             AllItemsWb.save()
             AllItemsWb.close()
@@ -602,7 +583,7 @@ while True:
 
         if Orders is not None:
             for Order in Orders:
-                print(f"'[INFO]' Navigating to '{Order[0]}' account.")
+                print(f"[cyan][INFO][/cyan] Navigating to [cyan]{Order[0]}[/cyan] account.")
 
                 if Order[0] == "SellerOrg Corp":
                     driver.get(Accounts["AccountA"])
@@ -619,7 +600,7 @@ while True:
 
                 driver.switch_to_window(0)
 
-                print(f"'[INFO]' Getting order #{Order[1]} details.")
+                print(f"[cyan][INFO][/cyan] Getting order #{Order[1]} details.")
                 driver.get(f"https://sellercentral.amazon.com/orders-v3/order/{Order[1]}")
                 driver.switch_to_window(0)
 
@@ -635,7 +616,7 @@ while True:
 
                 FirstOrder += 1
 
-            print("'[INFO]' Refreshing queries.")
+            print("[cyan][INFO][/cyan] Refreshing queries.")
             RefreshFMan()
 
             time.sleep(10)
@@ -644,7 +625,7 @@ while True:
 
         ###############################################################################################################################################
         #Open Feedback Manager workbook, and refresh all queries
-        print("'[INFO]' Refreshing all queries on 'Feedback Manager' workbook.")
+        print("[cyan][INFO][/cyan] Refreshing all queries on [cyan]Feedback Manager[/cyan] workbook.")
         RefreshAll()
         time.sleep(3)
 
@@ -681,7 +662,7 @@ while True:
             LastOrder = int(CurrSh.range(f"E{CurrSh.cells.last_cell.row}").end("up").row)
 
             if FirstOrder > LastOrder:
-                print(f"'[INFO]' No new orders to process in '{root}' sheet.")
+                print(f"[cyan][INFO][/cyan] No new orders to process in [cyan]{root}[/cyan] sheet.")
                 continue
 
             elif FirstOrder == LastOrder:
@@ -691,13 +672,13 @@ while True:
             else:
                 Orders = CurrSh.range(f"E{FirstOrder}:E{LastOrder}").value
 
-            print(f"'[INFO]' Navigating to '{root}' account.")
+            print(f"[cyan][INFO][/cyan] Navigating to [cyan]{root}[/cyan] account.")
             driver.get(url)
             time.sleep(2)
             driver.switch_to_window(0)
 
             for Order in Orders:
-                print(f"'[INFO]' Retrieving order #{Order} info.")
+                print(f"[cyan][INFO][/cyan] Retrieving order #{Order} info.")
                 driver.get(f"https://sellercentral.amazon.com/messaging/inbox-v3?fi=search&ss={Order}")
                 driver.switch_to_window(0)
                 
@@ -708,7 +689,7 @@ while True:
                         status.replace("Resolved on ", "Last response on ")
             
                 except TimeoutException:
-                    print(f"'[INFO]' No messages on order #{Order}. Moving forward.")
+                    print(f"[cyan][INFO][/cyan] No messages on order #{Order}. Moving forward.")
                     status = "N/A"
 
                 CurrSh.range(f"J{FirstOrder}").value = status
@@ -718,26 +699,26 @@ while True:
 
         ###############################################################################################################################################
         #Open workbook, send email, save and close
-        print("'[INFO]' Sorting all tables, saving and closing workbook.")
+        print("[cyan][INFO][/cyan] Sorting all tables, saving and closing workbook.")
         SortAll()
         time.sleep(3)
         FeedbackManWb.save()
         FeedbackManWb.close()
 
-        print("'[INFO]' Loading workbook and sending email.")
+        print("[cyan][INFO][/cyan] Loading workbook and sending email.")
         time.sleep(60)
         outlook.send_email(
-            account="user@example.com",
+            account=sender_email,
             subject=f"Feedback Manager - {Date}",
             body=body,
-            to=["user@example.com"],
-            cc=["user@example.com"],
+            to=to_email,
+            cc=cc_email,
             attachments=[FeedbackMan],
             show=True,
             send=True
         )
 
-        print("'[INFO]' Email has been sent.")
+        print("[cyan][INFO][/cyan] Email has been sent.")
 
     #Sleep 60 seconds before starting over
     time.sleep(60)

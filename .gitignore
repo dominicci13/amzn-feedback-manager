@@ -19,6 +19,11 @@ config/config.json
 *.xlsm
 *.csv
 
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
 # OS junk
 .DS_Store
 Thumbs.db
