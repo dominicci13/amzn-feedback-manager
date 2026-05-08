@@ -193,6 +193,12 @@ def RequestReport() -> None:
         #Replace NaN values with None for all columns
         df = df.where(pd.notnull(df), None)
 
+        df = df.dropna(subset=["Order ID"])
+        if df.empty:
+            print(f"[yellow][WARNING][/yellow] No valid rows to insert for [cyan]{root}[/cyan]. Skipping.")
+            os.remove(file_path)
+            return
+
         #Insert a column to the beginning of the table with the name of the account
         df.insert(0, "Account", root)
 
@@ -358,6 +364,11 @@ def FeedbackManagerComments() -> None:
             CleanData.append("N/A")
 
         CurrentOrder = CleanData[2]
+
+        if not CurrentOrder:
+            print(f"[yellow][WARNING][/yellow] Skipping row {row}: empty Order ID.")
+            row += 1
+            continue
 
         #Check if the current order is already in the database
         if FindOrder(CurrentOrder) != 0:
