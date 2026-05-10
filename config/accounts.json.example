@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy this file to config/accounts.json and fill in your actual values. config/accounts.json is gitignored.",
+
+  "amazon_account_names": {
+    "Account1": "My First Store",
+    "Account2": "My Second Store"
+  },
+
+  "amazon_urls": {
+    "Account1": "https://sellercentral.amazon.com/home?mons_sel_dir_mcid=YOUR_MCID&mons_sel_mkid=ATVPDKIKX0DER&mons_sel_dir_paid=YOUR_PAID&ignore_selection_changed=true",
+    "Account2": "https://sellercentral.amazon.com/home?mons_sel_dir_mcid=YOUR_MCID&mons_sel_mkid=ATVPDKIKX0DER&mons_sel_dir_paid=YOUR_PAID&ignore_selection_changed=true"
+  },
+
+  "feedback_manager_sheets": {
+    "Account1": 1,
+    "Account2": 2
+  },
+
+  "feedback_manager_rating_cells": {
+    "Account1": "C6",
+    "Account2": "I6"
+  }
+}

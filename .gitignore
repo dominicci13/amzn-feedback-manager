@@ -10,7 +10,7 @@ logs/
 output/
 
 # Local config / secrets
-config/config.json
+config/*.json
 .env
 
 # Data files
