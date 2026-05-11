@@ -14,6 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from fc_utils import chrome, custom_functions, accounts, alert_utils, outlook
 from fc_utils.config_utils import get_env, load_config_safe
 from fc_utils.schedule_utils import run_on_schedule
+from fc_utils.ui_utils import ask_user
 from fc_utils.accounts import AMAZON_ACCOUNT_NAMES, AMAZON_URLS
 from selenium.common.exceptions import TimeoutException
 
@@ -318,8 +319,6 @@ def main() -> None:
         print("[cyan][INFO][/cyan] Opening Feedback Manager workbook.")
         feedback_man_wb = xw.Book(feedback_man_path)
         rating_sh = feedback_man_wb.sheets(7)
-        custom_functions.update_directory(feedback_man_wb)
-
         refresh_all = feedback_man_wb.macro("Module1.RefreshAll")
         sort_all = feedback_man_wb.macro("Module1.SortAll")
         sort_status = feedback_man_wb.macro("Module1.SortStatus")
@@ -353,8 +352,6 @@ def main() -> None:
             feedback_manager_comments(driver, cursor, root)
 
         all_items_wb = xw.Book(all_items_path)
-        custom_functions.update_directory(all_items_wb)
-
         print("[cyan][INFO][/cyan] Opening [cyan]All Items[/cyan] and refreshing queries.")
         queries_address = all_items_wb.macro("Module2.QueriesAddress")
         queries_address()
@@ -481,4 +478,6 @@ def main() -> None:
             driver.quit()
 
 
+if ask_user("Run now?", "Amazon Feedback Manager"):
+    main()
 run_on_schedule(main, hour=10, minute=0, day_of_week="mon-fri")
