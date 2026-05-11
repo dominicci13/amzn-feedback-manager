@@ -303,7 +303,7 @@ def main() -> None:
     """Run the full Feedback Manager scrape, update workbook, and send email report."""
     driver = None
     try:
-        conn = custom_functions.SQLConnection("Amazon")
+        conn = custom_functions.sql_connection("Amazon")
         cursor = conn.cursor()
 
         week_day: str = datetime.now().strftime("%A")
