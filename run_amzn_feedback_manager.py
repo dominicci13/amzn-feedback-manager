@@ -1,25 +1,25 @@
 import os
+import json
 import time
 import traceback
-import pyodbc
 import pandas as pd
 import xlwings as xw
-from rich import print
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from fc_utils import chrome, custom_functions, accounts, alert_utils, outlook
+from fc_utils import chrome, custom_functions, accounts, alert_utils, outlook, database_utils
 from fc_utils.config_utils import get_env, load_config_safe
 from fc_utils.schedule_utils import run_on_schedule
 from fc_utils.ui_utils import ask_user
 from fc_utils.accounts import AMAZON_ACCOUNT_NAMES, AMAZON_URLS
+from fc_utils.logging_utils import setup_logging
 from selenium.common.exceptions import TimeoutException
 
-directory: str = os.getcwd()
 
+log = setup_logging("amzn_feedback_manager")
 load_dotenv()
 username: str = os.getenv("AMZN_email")
 password: str = os.getenv("AMZN_pass")
@@ -36,6 +36,9 @@ for _t in (table_negative, table_positive):
 _accounts_cfg = load_config_safe(Path.cwd() / "config" / "accounts.json")
 _feedback_sheets: dict[str, int] = _accounts_cfg.get("feedback_manager_sheets", {})
 _rating_cells: dict[str, str] = _accounts_cfg.get("feedback_manager_rating_cells", {})
+
+with open("config/paths.json") as f:
+    paths = json.load(f)
 
 body = """
 Good morning,<br><br>
@@ -92,10 +95,10 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
     driver.switch_to_window(0)
 
     if week_day == "Monday":
-        print(f"[cyan][INFO][/cyan] Getting [cyan]{root}[/cyan] 7-days Feedback Manager Report.")
+        log.info(f"Getting [cyan]{root}[/cyan] 7-days Feedback Manager Report.")
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".request_report_btn > kat-button:nth-child(1) > button:nth-child(1)"))).click()
     else:
-        print(f"[cyan][INFO][/cyan] Getting [cyan]{root}[/cyan] 1-day Feedback Manager Report.")
+        log.info(f"Getting [cyan]{root}[/cyan] 1-day Feedback Manager Report.")
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "kat-table-row.request_report_row:nth-child(2) > kat-table-cell:nth-child(2) > kat-dropdown:nth-child(1) > div:nth-child(1) > div:nth-child(1)"))).click()
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "1D0"))).click()
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".request_report_btn > kat-button:nth-child(1) > button:nth-child(1)"))).click()
@@ -108,10 +111,10 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
 
     while report_status != "Ready":
         if report_status == "No Data":
-            print(f"[cyan][INFO][/cyan] {report_status}. Moving to Positive Feedback.")
+            log.info(f"{report_status}. Moving to Positive Feedback.")
             return
 
-        print(f"[cyan][INFO][/cyan] {report_status}. Waiting for report to be ready.")
+        log.info(f"{report_status}. Waiting for report to be ready.")
 
         try:
             WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "/html/body/div/div[2]/div/my-app/div/div/report/div/kat-alert[3]")))
@@ -125,8 +128,8 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
     WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "/html/body/div/div[2]/div/my-app/div/div/report/div/kat-table[2]/kat-table-body/kat-table-row[1]/kat-table-cell[5]/kat-link"))).click()
     time.sleep(3)
 
-    print("[cyan][INFO][/cyan] File downloaded successfully. Loading to database.")
-    file_path: str = f"{directory}/downloaded_files/report.txt"
+    log.info("File downloaded successfully. Loading to database.")
+    file_path: str = f"{paths['download_path']}/report.txt"
 
     while True:
         try:
@@ -145,32 +148,23 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
             )
             break
         except FileNotFoundError:
-            print("[bold red][ERROR][/bold red] Failed to read the downloaded file. Waiting 5 seconds and trying again.")
+            log.error("Failed to read the downloaded file. Waiting 5 seconds and trying again.")
             time.sleep(5)
 
     df = df.where(pd.notnull(df), None)
     df = df.dropna(subset=["Order ID"])
     if df.empty:
-        print(f"[yellow][WARNING][/yellow] No valid rows to insert for [cyan]{root}[/cyan]. Skipping.")
+        log.warning(f"No valid rows to insert for [cyan]{root}[/cyan]. Skipping.")
         os.remove(file_path)
         return
 
     df.insert(0, "Account", root)
     df["UpdatedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    df = df.rename(columns={"Order ID": "OrderID", "Rater Email": "RaterEmail"})
 
-    for index, row in df.iterrows():
-        try:
-            cursor.execute(
-                f"INSERT INTO {table_negative} (Account, Date, Rating, Comments, Response, OrderID, RaterEmail, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (row["Account"], row["Date"], row["Rating"], row["Comments"], row["Response"], row["Order ID"], row["Rater Email"], row["UpdatedAt"])
-            )
-        except pyodbc.Error:
-            print(f"[bold red][ERROR][/bold red] [pyodbc.Error] Error inserting row {index + 1}:\n\n{row}", sep="\n\n")
-            traceback.print_exc()
-            raise RuntimeError(f"Insert failed at row {index + 1}. See traceback above.")
-
-    cursor.connection.commit()
-    print(f"[cyan][INFO][/cyan] Data inserted successfully in table [cyan]{table_negative}[/cyan].")
+    columns = ["Account", "Date", "Rating", "Comments", "Response", "OrderID", "RaterEmail", "UpdatedAt"]
+    database_utils.insert_dataframe(cursor, table_negative, df, columns)
+    log.info(f"Data inserted successfully in table [cyan]{table_negative}[/cyan].")
     os.remove(file_path)
 
 
@@ -182,7 +176,7 @@ def feedback_manager_ratings(driver: object, account: str, rating_sh: object) ->
         account (str): Account key used to look up the target cell range.
         rating_sh (object): xlwings Sheet object for the ratings sheet.
     """
-    print(f"[cyan][INFO][/cyan] Getting [cyan]{AMAZON_ACCOUNT_NAMES[account]}[/cyan] feedback ratings.")
+    log.info(f"Getting [cyan]{AMAZON_ACCOUNT_NAMES[account]}[/cyan] feedback ratings.")
     driver.get("https://sellercentral.amazon.com/feedback-manager/index.html#/")
     driver.switch_to_window(0)
 
@@ -217,7 +211,7 @@ def feedback_manager_ratings(driver: object, account: str, rating_sh: object) ->
             table_loaded = True
 
         except Exception:
-            print("[bold red][ERROR][/bold red] Error loading website. Retrying.")
+            log.error("Error loading website. Retrying.")
             driver.refresh()
 
 
@@ -234,7 +228,7 @@ def feedback_manager_comments(driver: object, cursor: object, root: str) -> None
     except TimeoutException:
         pass
 
-    print(f"[cyan][INFO][/cyan] Getting Positive Feedback comments for [cyan]{root}[/cyan].")
+    log.info(f"Getting Positive Feedback comments for [cyan]{root}[/cyan].")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".filter-tabs > kat-tabs:nth-child(1) > kat-tab-pane:nth-child(1) > kat-tab-header:nth-child(2)"))).click()
     WebDriverWait(driver, 10).until(EC.invisibility_of_element_located((By.CSS_SELECTOR, "kat-tab.tab-selected > feedback-list:nth-child(1) > kat-table:nth-child(2) > kat-spinner:nth-child(2)")))
 
@@ -244,7 +238,6 @@ def feedback_manager_comments(driver: object, cursor: object, root: str) -> None
         raw_data: list[str] = WebDriverWait(driver, 60).until(EC.presence_of_element_located((
             By.CSS_SELECTOR,
             f"kat-tab.tab-selected > feedback-list:nth-child(1) > kat-table:nth-child(2) > kat-table-body:nth-child(2) > kat-table-row:nth-child({row})"
-            "#feedback-details"
         ))).text.split("\n")
         raw_data = [item for item in raw_data if item not in ["Choose one", ""]]
 
@@ -258,37 +251,27 @@ def feedback_manager_comments(driver: object, cursor: object, root: str) -> None
         current_order: str = clean_data[2]
 
         if not current_order:
-            print(f"[yellow][WARNING][/yellow] Skipping row {row}: empty Order ID.")
+            log.warning(f"Skipping row {row}: empty Order ID.")
             row += 1
             continue
 
         if find_order(cursor, current_order) != 0:
-            print(f"[cyan][INFO][/cyan] Order {current_order} is already in the database.")
+            log.info(f"Order {current_order} is already in the database.")
             matched_order = True
             continue
 
         clean_data.insert(0, root)
-        df = pd.DataFrame([clean_data], columns=["Account", "Date", "Rating", "Order ID", "Comments"])
+        df = pd.DataFrame([clean_data], columns=["Account", "Date", "Rating", "OrderID", "Comments"])
         df = df.where(pd.notnull(df), None)
 
-        for index, df_row in df.iterrows():
-            try:
-                cursor.execute(
-                    f"INSERT INTO {table_positive} (Account, Date, Rating, OrderID, Comments) VALUES (?, ?, ?, ?, ?)",
-                    (df_row["Account"], df_row["Date"], df_row["Rating"], df_row["Order ID"], df_row["Comments"])
-                )
-            except pyodbc.Error:
-                print(f"[bold red][ERROR][/bold red] [pyodbc.Error] Error inserting current row:", df_row, sep="\n\n")
-                traceback.print_exc()
-                raise RuntimeError(f"Insert failed at row {index + 1}. See traceback above.")
-
-        cursor.connection.commit()
-        print(f"[cyan][INFO][/cyan] Order {current_order} data inserted successfully in table [cyan]{table_positive}[/cyan].")
+        columns = ["Account", "Date", "Rating", "OrderID", "Comments"]
+        database_utils.insert_dataframe(cursor, table_positive, df, columns)
+        log.info(f"Order {current_order} data inserted successfully in table [cyan]{table_positive}[/cyan].")
 
         row += 1
 
         if row == 21:
-            print("[cyan][INFO][/cyan] Moving to next page.")
+            log.info("Moving to next page.")
             pagination: str = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "kat-tab.tab-selected > feedback-list:nth-child(1) > kat-pagination:nth-child(1)"))).text
             pagination = len(pagination.split("\n"))
 
@@ -311,40 +294,33 @@ def main() -> None:
         curr_date: str = datetime.now().strftime("%Y-%m-%d")
         date_str: str = datetime.now().strftime("%m/%d/%Y")
 
-        feedback_man_path: str = f"{directory}/Amazon/Reports/Feedback-Manager.xlsm"
-        all_items_path: str = f"{directory}/Amazon/Reports/All Items.xlsm"
+        feedback_man_path: str = paths["feedback_man_path"]
+        all_items_path: str = paths["all_items_path"]
 
         driver = chrome.start_browser(user_data_dir, "Default", headless=True)
 
-        print("[cyan][INFO][/cyan] Opening Feedback Manager workbook.")
+        log.info("Opening Feedback Manager workbook.")
         feedback_man_wb = xw.Book(feedback_man_path)
         rating_sh = feedback_man_wb.sheets(7)
         refresh_all = feedback_man_wb.macro("Module1.RefreshAll")
         sort_all = feedback_man_wb.macro("Module1.SortAll")
         sort_status = feedback_man_wb.macro("Module1.SortStatus")
 
-        for account, url in AMAZON_URLS.items():
-            root = AMAZON_ACCOUNT_NAMES[account]
+        for account, root, url in accounts.iter_amazon_accounts():
 
-            print(f"[cyan][INFO][/cyan] Navigating to [cyan]{root}[/cyan] account.")
+            log.info(f"Navigating to [cyan]{root}[/cyan] account.")
             driver.get(url)
             time.sleep(2)
             driver.switch_to_window(0)
 
             try:
-                code = None
-                while not code:
-                    code = accounts.amazon_login(driver, username, username, password)
-                    if not code:
-                        print("[bold red][ERROR][/bold red] Failed to log in to Amazon. Trying again.")
-                        driver.get(url)
-                        driver.switch_to_window(0)
+                accounts.amazon_login(driver, username, username, password, retry_url=url)
             except TimeoutException:
                 pass
 
-            print("[cyan][INFO][/cyan] Checking if Feedback Manager's files have been downloaded.")
+            log.info("Checking if Feedback Manager's files have been downloaded.")
             if last_update(cursor, root).split(" ")[0] == curr_date:
-                print(f"[cyan][INFO][/cyan] Feedback Manager's files for [cyan]{root}[/cyan] has been downloaded today.")
+                log.info(f"Feedback Manager's files for [cyan]{root}[/cyan] has been downloaded today.")
             else:
                 request_report(driver, cursor, root, week_day)
 
@@ -352,7 +328,7 @@ def main() -> None:
             feedback_manager_comments(driver, cursor, root)
 
         all_items_wb = xw.Book(all_items_path)
-        print("[cyan][INFO][/cyan] Opening [cyan]All Items[/cyan] and refreshing queries.")
+        log.info("Opening [cyan]All Items[/cyan] and refreshing queries.")
         queries_address = all_items_wb.macro("Module2.QueriesAddress")
         queries_address()
         time.sleep(5)
@@ -366,7 +342,7 @@ def main() -> None:
         last_order: int = int(fman_sh.range(f"B{fman_sh.cells.last_cell.row}").end("up").row)
 
         if first_order > last_order:
-            print("[cyan][INFO][/cyan] No new orders to process.")
+            log.info("No new orders to process.")
             orders = None
             all_items_wb.save()
             all_items_wb.close()
@@ -379,11 +355,11 @@ def main() -> None:
 
         if orders is not None:
             for order in orders:
-                print(f"[cyan][INFO][/cyan] Navigating to [cyan]{order[0]}[/cyan] account.")
+                log.info(f"Navigating to [cyan]{order[0]}[/cyan] account.")
                 driver.get(name_to_url[order[0]])
                 driver.switch_to_window(0)
 
-                print(f"[cyan][INFO][/cyan] Getting order #{order[1]} details.")
+                log.info(f"Getting order #{order[1]} details.")
                 driver.get(f"https://sellercentral.amazon.com/orders-v3/order/{order[1]}")
                 driver.switch_to_window(0)
 
@@ -396,41 +372,40 @@ def main() -> None:
                 fman_sh.range(f"D{first_order}").value = [asin, sku]
                 first_order += 1
 
-            print("[cyan][INFO][/cyan] Refreshing queries.")
+            log.info("Refreshing queries.")
             refresh_fman()
             time.sleep(10)
             all_items_wb.save()
             all_items_wb.close()
 
-        print("[cyan][INFO][/cyan] Refreshing all queries on [cyan]Feedback Manager[/cyan] workbook.")
+        log.info("Refreshing all queries on [cyan]Feedback Manager[/cyan] workbook.")
         refresh_all()
         time.sleep(3)
 
         sort_status()
         time.sleep(5)
 
-        for account, url in AMAZON_URLS.items():
-            root = AMAZON_ACCOUNT_NAMES[account]
+        for account, root, url in accounts.iter_amazon_accounts():
             curr_sh = feedback_man_wb.sheets(_feedback_sheets[account])
 
             first_order = custom_functions.first_empty_row(curr_sh, "J", "B3")
             last_order = int(curr_sh.range(f"E{curr_sh.cells.last_cell.row}").end("up").row)
 
             if first_order > last_order:
-                print(f"[cyan][INFO][/cyan] No new orders to process in [cyan]{root}[/cyan] sheet.")
+                log.info(f"No new orders to process in [cyan]{root}[/cyan] sheet.")
                 continue
             elif first_order == last_order:
                 orders = [curr_sh.range(f"E{first_order}:E{last_order}").value]
             else:
                 orders = curr_sh.range(f"E{first_order}:E{last_order}").value
 
-            print(f"[cyan][INFO][/cyan] Navigating to [cyan]{root}[/cyan] account.")
+            log.info(f"Navigating to [cyan]{root}[/cyan] account.")
             driver.get(url)
             time.sleep(2)
             driver.switch_to_window(0)
 
             for order in orders:
-                print(f"[cyan][INFO][/cyan] Retrieving order #{order} info.")
+                log.info(f"Retrieving order #{order} info.")
                 driver.get(f"https://sellercentral.amazon.com/messaging/inbox-v3?fi=search&ss={order}")
                 driver.switch_to_window(0)
 
@@ -439,7 +414,7 @@ def main() -> None:
                     if status.startswith("Resolved on "):
                         status = status.replace("Resolved on ", "Last response on ")
                 except TimeoutException:
-                    print(f"[cyan][INFO][/cyan] No messages on order #{order}. Moving forward.")
+                    log.info(f"No messages on order #{order}. Moving forward.")
                     status = "N/A"
 
                 curr_sh.range(f"J{first_order}").value = status
@@ -448,13 +423,13 @@ def main() -> None:
         driver.quit()
         driver = None
 
-        print("[cyan][INFO][/cyan] Sorting all tables, saving and closing workbook.")
+        log.info("Sorting all tables, saving and closing workbook.")
         sort_all()
         time.sleep(3)
         feedback_man_wb.save()
         feedback_man_wb.close()
 
-        print("[cyan][INFO][/cyan] Loading workbook and sending email.")
+        log.info("Loading workbook and sending email.")
         time.sleep(60)
         outlook.send_email(
             account=sender_email,
@@ -467,7 +442,7 @@ def main() -> None:
             send=True
         )
 
-        print("[cyan][INFO][/cyan] Email has been sent.")
+        log.info("Email has been sent.")
 
     except KeyboardInterrupt:
         raise
