@@ -38,6 +38,7 @@ The script runs automatically at 10:00 Mon–Fri via APScheduler.
 | `AMZN_email` | Amazon Seller Central login email |
 | `AMZN_pass` | Amazon Seller Central password |
 | `CHROME_USER_DATA_DIR` | Path to Chrome automation profile directory |
+| `ALERT_EMAIL` | Outlook recipient for unhandled-exception crash reports |
 | `SENDER_EMAIL` | Outlook account used to send the report email |
 | `TO_EMAIL` | Comma-separated list of recipient email addresses |
 | `CC_EMAIL` | Comma-separated list of CC email addresses |
