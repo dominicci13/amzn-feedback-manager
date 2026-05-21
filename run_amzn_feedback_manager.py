@@ -329,13 +329,8 @@ def main() -> None:
 
         all_items_wb = xw.Book(all_items_path)
         log.info("Opening [cyan]All Items[/cyan] and refreshing queries.")
-        queries_address = all_items_wb.macro("Module2.QueriesAddress")
-        queries_address()
-        time.sleep(5)
-
-        refresh_fman = all_items_wb.macro("Module1.RefreshFMan")
-        refresh_fman()
-        time.sleep(10)
+        refresh_all_items = all_items_wb.macro("modUtilities.refresh")
+        refresh_all_items()
 
         fman_sh = all_items_wb.sheets(5)
         first_order: int = custom_functions.first_empty_row(fman_sh, "D", "B3")
@@ -373,8 +368,7 @@ def main() -> None:
                 first_order += 1
 
             log.info("Refreshing queries.")
-            refresh_fman()
-            time.sleep(10)
+            refresh_all_items()
             all_items_wb.save()
             all_items_wb.close()
 
