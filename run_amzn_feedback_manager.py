@@ -302,9 +302,9 @@ def main() -> None:
         log.info("Opening Feedback Manager workbook.")
         feedback_man_wb = xw.Book(feedback_man_path)
         rating_sh = feedback_man_wb.sheets(7)
-        refresh_all = feedback_man_wb.macro("Module1.RefreshAll")
-        sort_all = feedback_man_wb.macro("Module1.SortAll")
-        sort_status = feedback_man_wb.macro("Module1.SortStatus")
+        refresh_all = feedback_man_wb.macro("modUtilities.refresh")
+        sort_all = feedback_man_wb.macro("modUtilities.sortAll")
+        sort_status = feedback_man_wb.macro("modUtilities.sortStatus")
 
         for account, root, url in accounts.iter_amazon_accounts():
 
