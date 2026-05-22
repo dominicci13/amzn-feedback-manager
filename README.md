@@ -14,6 +14,94 @@ The script is **one Python file** orchestrating five external surfaces: Selenium
 4. **All-Items order-detail lookup** — refresh `All Items.xlsm` (synchronous `modUtilities.refresh`), find empty ASIN+SKU rows on the Feedback-Manager sheet, navigate Seller Central per order to extract ASIN+SKU, write back to the workbook, refresh again.
 5. **Status pass + sort + email** — refresh `Feedback-Manager.xlsm`, call `sortStatus` to surface open items, walk each per-account sheet to fill in messaging-inbox status per order, then `sortAll` (Date desc, Order ID asc), save, email via Outlook.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    sched[APScheduler<br/>10:00 Mon-Fri] --> loop
+
+    subgraph loop[Per-account Amazon loop]
+        direction TB
+        login["accounts.amazon_login<br/>retry_url=url"] --> skip{last_update == today?}
+        skip -->|yes| ratings
+        skip -->|no| neg[request_report<br/>negative feedback TSV]
+        neg --> ratings[feedback_manager_ratings<br/>scrape rating summary]
+        ratings --> pos[feedback_manager_comments<br/>walk positive list]
+    end
+
+    neg --> db_neg[(SQL Server<br/>DB_TABLE_NEGATIVE)]
+    pos --> db_pos[(SQL Server<br/>DB_TABLE_POSITIVE)]
+    ratings --> wb1
+
+    loop --> wb2
+
+    subgraph wb1[Feedback-Manager.xlsm — hidden]
+        direction TB
+        rating_write[write per-account<br/>rating block to Sheet 7]
+    end
+
+    subgraph wb2[All Items.xlsm — hidden]
+        direction TB
+        refresh1[modUtilities.refresh] --> sku_lookup[per-empty-ASIN row:<br/>nav SC order · pull ASIN+SKU]
+    end
+
+    wb1 --> refresh2[modUtilities.refresh<br/>+ sortStatus]
+    wb2 --> refresh2
+    refresh2 --> status_loop[per-account Status<br/>messaging-inbox lookup]
+    status_loop --> sort[modUtilities.sortAll]
+    sort --> email[Outlook email<br/>Feedback-Manager.xlsm attached]
+```
+
+## Performance notes
+
+The script's slowest legs are the per-account Seller Central scrapes
+and the per-order messaging-inbox lookup; here's what was tuned during
+the Phase 4 polish (before retirement) to avoid making them worse:
+
+- **Synchronous Power Query refresh.** Both `Feedback-Manager.xlsm` and
+  `All Items.xlsm` use `modUtilities.refresh` which iterates each
+  connection, forces `BackgroundQuery = False`, and refreshes them in
+  order. The Python side no longer needs a `time.sleep()` to wait.
+- **Idempotency checks** — `last_update` short-circuits the negative
+  feedback download if today's already loaded; `find_order` short-
+  circuits the positive feedback insert per Order ID.
+- **Excel runs hidden.** Both workbooks open via `xw.App(visible=False,
+  add_book=False)` with `display_alerts = False`.
+- **Macros called inline** — `wb.macro("modUtilities.X")()` directly,
+  no intermediate proxy vars.
+- **VBA hardening.** All 5 subs (3 in `Feedback-Manager`, 2 in
+  `All Items`) run inside `ScreenUpdating=False`,
+  `Calculation=xlCalculationManual`, `EnableEvents=False`, with
+  `On Error GoTo Cleanup` blocks that restore Application state.
+
+## Logging
+
+```text
+10:00:02 INFO     Navigating to AccountKeyA account.
+10:00:11 INFO     Checking if Feedback Manager's files have been downloaded.
+10:00:12 INFO     Getting AccountKeyA 1-day Feedback Manager Report.
+10:00:31 INFO     File downloaded successfully. Loading to database.
+10:00:34 INFO     Data inserted successfully in table FedManNegative.
+10:00:39 INFO     Getting AccountKeyA feedback ratings.
+10:01:08 INFO     Getting Positive Feedback comments for AccountKeyA.
+10:01:42 INFO     Order 123-4567890-1234567 data inserted successfully in table FedManPositive.
+10:08:24 INFO     Opening All Items and refreshing queries.
+10:09:12 INFO     Refreshing all queries on Feedback Manager workbook.
+10:09:28 INFO     Sorting all tables, saving and closing workbook.
+10:10:31 INFO     Email has been sent.
+```
+
+Configured once via the shared helper:
+
+```python
+from fc_utils.logging_utils import setup_logging
+log = setup_logging("amzn_feedback_manager")
+```
+
+`setup_logging` wires a Rich console handler (colorized output, markup
+rendering, rich tracebacks) and a 1 MB rotating file handler writing to
+`logs/<name>.log`. Available to every automation that imports `fc_utils`.
+
 ## Project layout
 
 ```
