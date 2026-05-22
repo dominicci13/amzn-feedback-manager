@@ -1,6 +1,16 @@
 Option Explicit
 
-
+' --- refresh ---------------------------------------------------------------
+' Refreshes each connection synchronously. Returns only once every query has
+' finished, so the calling Python code does not need a `time.sleep()` to wait
+' for background queries.
+'
+' Performance toggles disable screen updates, automatic calculation, events,
+' and alerts during the refresh; the original Application state is restored
+' in the Cleanup block whether the Sub succeeded or raised an error.
+'
+' Side effect: each WorkbookConnection's BackgroundQuery flag is set to
+' False and persists in the saved workbook. This is intentional.
 Sub refresh()
     Dim conn As WorkbookConnection
     Dim prevCalc As Long
@@ -13,7 +23,6 @@ Sub refresh()
     Application.EnableEvents = False
     Application.DisplayAlerts = False
 
-    'Force synchronous refresh on every Power Query connection.
     For Each conn In ThisWorkbook.Connections
         On Error Resume Next
         conn.OLEDBConnection.BackgroundQuery = False
@@ -32,8 +41,13 @@ Cleanup:
 End Sub
 
 
+' --- sortAll ---------------------------------------------------------------
+' Sorts the `Inactive_Listings` table on Sheet 1 by GS1 Type (descending) —
+' the only sort op this workbook needs. Called by sibling automations after
+' they refresh the Inactive Listings query so newest GS1 codes surface first.
+'
+' Performance toggles + Cleanup block as in the per-account workbook's sortAll.
 Sub sortAll()
-    'Sort Inactive_Listings by GS1 Type desc — the only sort op this workbook needs.
     Dim sh As Worksheet
     Dim tbl As ListObject
     Dim prevCalc As Long

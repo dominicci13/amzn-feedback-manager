@@ -1,51 +1,74 @@
+"""Weekday Amazon Feedback Manager scrape + report.
+
+Once per weekday morning (Mon-Fri 10:00 local) this script:
+
+1. For each Amazon account in `AMAZON_URLS`, logs into Seller Central and
+   downloads the negative feedback report (7-day on Mondays, 1-day otherwise),
+   inserts new rows into `DB_TABLE_NEGATIVE`.
+2. Scrapes the feedback ratings summary block for each account from Sheet 7
+   ("Feedback Rating") of `Feedback-Manager.xlsm` and writes the per-account
+   block to its cell anchor in `feedback_manager_rating_cells`.
+3. Walks the positive feedback list and inserts new (not-yet-stored) rows
+   into `DB_TABLE_POSITIVE`.
+4. Refreshes the `All Items.xlsm` workbook to surface any new feedback orders
+   in the Feedback-Manager sheet, then drives Seller Central for each new
+   row to pull the ASIN + SKU and writes them back to the workbook.
+5. Refreshes `Feedback-Manager.xlsm`, runs the per-account `sortAll` and
+   `sortStatus` macros, saves, and emails the workbook via Outlook.
+"""
 import os
-import json
 import time
 import traceback
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 import xlwings as xw
 from dotenv import load_dotenv
-from datetime import datetime
-from pathlib import Path
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from fc_utils import chrome, custom_functions, accounts, alert_utils, outlook, database_utils
+from selenium.webdriver.support.ui import WebDriverWait
+
+from fc_utils import accounts, alert_utils, chrome, custom_functions, database_utils, greeting_for, outlook
 from fc_utils.config_utils import get_env, load_config_safe
+from fc_utils.logging_utils import setup_logging
 from fc_utils.schedule_utils import run_on_schedule
 from fc_utils.ui_utils import ask_user
-from fc_utils.accounts import AMAZON_ACCOUNT_NAMES, AMAZON_URLS
-from fc_utils.logging_utils import setup_logging
-from selenium.common.exceptions import TimeoutException
 
 
 log = setup_logging("amzn_feedback_manager")
 load_dotenv()
-username: str = os.getenv("AMZN_email")
-password: str = os.getenv("AMZN_pass")
-sender_email: str = os.getenv("SENDER_EMAIL", "")
-to_email: list[str] = [e.strip() for e in os.getenv("TO_EMAIL", "").split(",") if e.strip()]
-cc_email: list[str] = [e.strip() for e in os.getenv("CC_EMAIL", "").split(",") if e.strip()]
+username: str = get_env("AMZN_email", required=True)
+password: str = get_env("AMZN_pass", required=True)
 user_data_dir: str = get_env("CHROME_USER_DATA_DIR", required=True)
-table_negative: str = os.getenv("DB_TABLE_NEGATIVE", "FedManNegative")
-table_positive: str = os.getenv("DB_TABLE_POSITIVE", "FedManPositive")
+sender_email: str = get_env("SENDER_EMAIL", required=True)
+to_email: list[str] = [e.strip() for e in (get_env("TO_EMAIL", required=True) or "").split(",") if e.strip()]
+cc_email: list[str] = [e.strip() for e in (get_env("CC_EMAIL", default="") or "").split(",") if e.strip()]
+table_negative: str = get_env("DB_TABLE_NEGATIVE", default="FedManNegative") or "FedManNegative"
+table_positive: str = get_env("DB_TABLE_POSITIVE", default="FedManPositive") or "FedManPositive"
 for _t in (table_negative, table_positive):
     if not _t.replace("_", "").isalnum():
         raise ValueError(f"Invalid table name: {_t!r}")
 
-_accounts_cfg = load_config_safe(Path.cwd() / "config" / "accounts.json")
+_accounts_cfg = load_config_safe(Path(__file__).resolve().parent / "config" / "accounts.json")
 _feedback_sheets: dict[str, int] = _accounts_cfg.get("feedback_manager_sheets", {})
 _rating_cells: dict[str, str] = _accounts_cfg.get("feedback_manager_rating_cells", {})
 
-with open("config/paths.json") as f:
-    paths = json.load(f)
+_paths = load_config_safe(Path(__file__).resolve().parent / "config" / "paths.json")
+download_path: str = _paths["download_path"]
+feedback_manager_wb_path: str = _paths["feedback_manager_wb_path"]
+all_items_wb_path: str = _paths["all_items_wb_path"]
 
-body = """
-Good morning,<br><br>
-Please find attached Feedback Manager report updated for today.<br><br>
-If any questions, please let me know.<br><br>
-Thanks,<br><br>
-"""
+
+def _email_body() -> str:
+    """Build the email body with the time-of-day greeting."""
+    return (
+        f"{greeting_for()},<br><br>"
+        "Please find attached Feedback Manager report updated for today.<br><br>"
+        "If any questions, please let me know.<br><br>"
+        "Thanks,<br><br>"
+    )
 
 
 def last_update(cursor: object, account: str) -> str:
@@ -129,7 +152,7 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
     time.sleep(3)
 
     log.info("File downloaded successfully. Loading to database.")
-    file_path: str = f"{paths['download_path']}/report.txt"
+    file_path: str = f"{download_path}/report.txt"
 
     while True:
         try:
@@ -168,15 +191,16 @@ def request_report(driver: object, cursor: object, root: str, week_day: str) -> 
     os.remove(file_path)
 
 
-def feedback_manager_ratings(driver: object, account: str, rating_sh: object) -> None:
+def feedback_manager_ratings(driver: object, account: str, root: str, rating_sh: object) -> None:
     """Scrape the feedback ratings summary table and write it to the workbook.
 
     Args:
         driver (object): Active SeleniumBase WebDriver instance.
         account (str): Account key used to look up the target cell range.
+        root (str): Account display name used for logging.
         rating_sh (object): xlwings Sheet object for the ratings sheet.
     """
-    log.info(f"Getting [cyan]{AMAZON_ACCOUNT_NAMES[account]}[/cyan] feedback ratings.")
+    log.info(f"Getting [cyan]{root}[/cyan] feedback ratings.")
     driver.get("https://sellercentral.amazon.com/feedback-manager/index.html#/")
     driver.switch_to_window(0)
 
@@ -286,6 +310,9 @@ def feedback_manager_comments(driver: object, cursor: object, root: str) -> None
 def main() -> None:
     """Run the full Feedback Manager scrape, update workbook, and send email report."""
     driver = None
+    conn = None
+    feedback_man_app = None
+    all_items_app = None
     try:
         conn = custom_functions.sql_connection("Amazon")
         cursor = conn.cursor()
@@ -294,17 +321,15 @@ def main() -> None:
         curr_date: str = datetime.now().strftime("%Y-%m-%d")
         date_str: str = datetime.now().strftime("%m/%d/%Y")
 
-        feedback_man_path: str = paths["feedback_man_path"]
-        all_items_path: str = paths["all_items_path"]
+        name_to_url: dict[str, str] = {root: url for _, root, url in accounts.iter_amazon_accounts()}
 
         driver = chrome.start_browser(user_data_dir, "Default", headless=True)
 
         log.info("Opening Feedback Manager workbook.")
-        feedback_man_wb = xw.Book(feedback_man_path)
+        feedback_man_app = xw.App(visible=False, add_book=False)
+        feedback_man_app.display_alerts = False
+        feedback_man_wb = feedback_man_app.books.open(feedback_manager_wb_path)
         rating_sh = feedback_man_wb.sheets(7)
-        refresh_all = feedback_man_wb.macro("modUtilities.refresh")
-        sort_all = feedback_man_wb.macro("modUtilities.sortAll")
-        sort_status = feedback_man_wb.macro("modUtilities.sortStatus")
 
         for account, root, url in accounts.iter_amazon_accounts():
 
@@ -324,13 +349,14 @@ def main() -> None:
             else:
                 request_report(driver, cursor, root, week_day)
 
-            feedback_manager_ratings(driver, account, rating_sh)
+            feedback_manager_ratings(driver, account, root, rating_sh)
             feedback_manager_comments(driver, cursor, root)
 
-        all_items_wb = xw.Book(all_items_path)
         log.info("Opening [cyan]All Items[/cyan] and refreshing queries.")
-        refresh_all_items = all_items_wb.macro("modUtilities.refresh")
-        refresh_all_items()
+        all_items_app = xw.App(visible=False, add_book=False)
+        all_items_app.display_alerts = False
+        all_items_wb = all_items_app.books.open(all_items_wb_path)
+        all_items_wb.macro("modUtilities.refresh")()
 
         fman_sh = all_items_wb.sheets(5)
         first_order: int = custom_functions.first_empty_row(fman_sh, "D", "B3")
@@ -339,14 +365,10 @@ def main() -> None:
         if first_order > last_order:
             log.info("No new orders to process.")
             orders = None
-            all_items_wb.save()
-            all_items_wb.close()
         elif first_order == last_order:
             orders = [fman_sh.range(f"B{first_order}:C{last_order}").value]
         else:
             orders = fman_sh.range(f"B{first_order}:C{last_order}").value
-
-        name_to_url: dict[str, str] = {v: AMAZON_URLS[k] for k, v in AMAZON_ACCOUNT_NAMES.items()}
 
         if orders is not None:
             for order in orders:
@@ -368,15 +390,18 @@ def main() -> None:
                 first_order += 1
 
             log.info("Refreshing queries.")
-            refresh_all_items()
-            all_items_wb.save()
-            all_items_wb.close()
+            all_items_wb.macro("modUtilities.refresh")()
+
+        all_items_wb.save()
+        all_items_wb.close()
+        all_items_app.quit()
+        all_items_app = None
 
         log.info("Refreshing all queries on [cyan]Feedback Manager[/cyan] workbook.")
-        refresh_all()
+        feedback_man_wb.macro("modUtilities.refresh")()
         time.sleep(3)
 
-        sort_status()
+        feedback_man_wb.macro("modUtilities.sortStatus")()
         time.sleep(5)
 
         for account, root, url in accounts.iter_amazon_accounts():
@@ -418,33 +443,52 @@ def main() -> None:
         driver = None
 
         log.info("Sorting all tables, saving and closing workbook.")
-        sort_all()
+        feedback_man_wb.macro("modUtilities.sortAll")()
         time.sleep(3)
         feedback_man_wb.save()
         feedback_man_wb.close()
+        feedback_man_app.quit()
+        feedback_man_app = None
 
         log.info("Loading workbook and sending email.")
         time.sleep(60)
         outlook.send_email(
             account=sender_email,
             subject=f"Feedback Manager - {date_str}",
-            body=body,
+            body=_email_body(),
             to=to_email,
             cc=cc_email,
-            attachments=[feedback_man_path],
+            attachments=[feedback_manager_wb_path],
             show=True,
             send=True
         )
 
         log.info("Email has been sent.")
 
-    except KeyboardInterrupt:
-        raise
+    except (KeyboardInterrupt, SystemExit):
+        log.warning("Script interrupted by user.")
+        raise SystemExit(0)
+
     except Exception:
         alert_utils.handle_crash(driver, traceback.format_exc(), "Feedback Manager")
+        raise SystemExit(1)
+
     finally:
-        if driver:
+        try:
             driver.quit()
+        except Exception:
+            pass
+        for _app in (feedback_man_app, all_items_app):
+            if _app is not None:
+                try:
+                    _app.quit()
+                except Exception:
+                    pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 if ask_user("Run now?", "Amazon Feedback Manager"):
