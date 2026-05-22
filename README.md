@@ -94,13 +94,13 @@ the Phase 4 polish (before retirement) to avoid making them worse:
 Configured once via the shared helper:
 
 ```python
-from fc_utils.logging_utils import setup_logging
+from seller_automation_utils.logging_utils import setup_logging
 log = setup_logging("amzn_feedback_manager")
 ```
 
 `setup_logging` wires a Rich console handler (colorized output, markup
 rendering, rich tracebacks) and a 1 MB rotating file handler writing to
-`logs/<name>.log`. Available to every automation that imports `fc_utils`.
+`logs/<name>.log`. Available to every automation that imports `seller_automation_utils`.
 
 ## Project layout
 
@@ -146,7 +146,7 @@ Edit each file with real values. All three are gitignored.
 
 `config/accounts.json` has four top-level keys:
 
-- `amazon_account_names` / `amazon_urls` — consumed by `fc_utils.accounts.iter_amazon_accounts()`.
+- `amazon_account_names` / `amazon_urls` — consumed by `seller_automation_utils.accounts.iter_amazon_accounts()`.
 - `feedback_manager_sheets` — maps each account key to its 1-indexed sheet number in `Feedback-Manager.xlsm` (sheets 1-6 are the per-account tables; sheet 7 is "Feedback Rating"; sheets 8-9 are positive/negative DB readouts).
 - `feedback_manager_rating_cells` — maps each account key to the top-left cell of its 7×4 ratings block on Sheet 7. The Feedback Rating layout puts 2 accounts per row-block: B/C-F (cols) + H/I-L for accounts 1+2 (rows 5-12), 3+4 (rows 16-23), 5+6 (rows 27-34).
 
