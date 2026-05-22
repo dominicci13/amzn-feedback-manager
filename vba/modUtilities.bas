@@ -45,7 +45,7 @@ End Sub
 ' Sorts each per-account table by Date (descending) then Order ID (ascending).
 ' The first 6 sheets are the per-account tables; their ListObject name is
 ' derived from the sheet name with spaces replaced by underscores (e.g.
-' "SellerOrg" → "Account_A"). Each sheet's selection is parked on B4
+' "Sheet Name" → "Sheet_Name"). Each sheet's selection is parked on B4
 ' after sorting so the table opens at the top-left next time.
 '
 ' Performance toggles match the canonical Pending-Offers pattern; the
